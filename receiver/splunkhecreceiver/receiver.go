@@ -48,6 +48,7 @@ const (
 	responseErrUnmarshalBody          = "Failed to unmarshal message body"
 	responseErrNextConsumer           = "Internal Server Error"
 	responseErrUnsupportedMetricEvent = "Unsupported metric event"
+	responseErrUnsupportedLogEvent    = "Unsupported log event"
 
 	// Centralizing some HTTP and related string constants.
 	jsonContentType           = "application/json"
@@ -68,21 +69,53 @@ var (
 	errUnmarshalBodyRespBody  = initJSONResponse(responseErrUnmarshalBody)
 	errNextConsumerRespBody   = initJSONResponse(responseErrNextConsumer)
 	errUnsupportedMetricEvent = initJSONResponse(responseErrUnsupportedMetricEvent)
+	errUnsupportedLogEvent    = initJSONResponse(responseErrUnsupportedLogEvent)
 )
 
 // splunkReceiver implements the component.MetricsReceiver for Splunk HEC metric protocol.
 type splunkReceiver struct {
 	sync.Mutex
-	logger      *zap.Logger
-	config      *Config
-	logConsumer consumer.LogsConsumer
-	server      *http.Server
+	logger          *zap.Logger
+	config          *Config
+	logsConsumer    consumer.LogsConsumer
+	metricsConsumer consumer.MetricsConsumer
+	server          *http.Server
 }
 
 var _ component.MetricsReceiver = (*splunkReceiver)(nil)
 
-// New creates the Splunk HEC receiver with the given configuration.
-func New(
+// NewMetricsReceiver creates the Splunk HEC receiver with the given configuration.
+func NewMetricsReceiver(
+	logger *zap.Logger,
+	config Config,
+	nextConsumer consumer.MetricsConsumer,
+) (component.MetricsReceiver, error) {
+	if nextConsumer == nil {
+		return nil, errNilNextConsumer
+	}
+
+	if config.Endpoint == "" {
+		return nil, errEmptyEndpoint
+	}
+
+	r := &splunkReceiver{
+		logger:          logger,
+		config:          &config,
+		metricsConsumer: nextConsumer,
+		server: &http.Server{
+			Addr: config.Endpoint,
+			// TODO: Evaluate what properties should be configurable, for now
+			//		set some hard-coded values.
+			ReadHeaderTimeout: defaultServerTimeout,
+			WriteTimeout:      defaultServerTimeout,
+		},
+	}
+
+	return r, nil
+}
+
+// NewLogsReceiver creates the Splunk HEC receiver with the given configuration.
+func NewLogsReceiver(
 	logger *zap.Logger,
 	config Config,
 	nextConsumer consumer.LogsConsumer,
@@ -96,9 +129,9 @@ func New(
 	}
 
 	r := &splunkReceiver{
-		logger:      logger,
-		config:      &config,
-		logConsumer: nextConsumer,
+		logger:       logger,
+		config:       &config,
+		logsConsumer: nextConsumer,
 		server: &http.Server{
 			Addr: config.Endpoint,
 			// TODO: Evaluate what properties should be configurable, for now
@@ -161,7 +194,9 @@ func (r *splunkReceiver) handleReq(resp http.ResponseWriter, req *http.Request) 
 		transport = "https"
 	}
 	ctx := obsreport.ReceiverContext(req.Context(), r.config.Name(), transport, r.config.Name())
-	ctx = obsreport.StartMetricsReceiveOp(ctx, r.config.Name(), transport)
+	if r.logsConsumer == nil {
+		ctx = obsreport.StartMetricsReceiveOp(ctx, r.config.Name(), transport)
+	}
 
 	if req.Method != http.MethodPost {
 		r.failRequest(ctx, resp, http.StatusBadRequest, invalidMethodRespBody, nil)
@@ -194,12 +229,10 @@ func (r *splunkReceiver) handleReq(resp http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	messagesReceived := 0
 	dec := json.NewDecoder(bodyReader)
 
 	var events []*splunk.Event
 
-	var decodeErr error
 	for dec.More() {
 		var msg splunk.Event
 		err := dec.Decode(&msg)
@@ -208,15 +241,45 @@ func (r *splunkReceiver) handleReq(resp http.ResponseWriter, req *http.Request) 
 			return
 		}
 		if msg.IsMetric() {
-			// Currently unsupported.
-			r.failRequest(ctx, resp, http.StatusBadRequest, errUnsupportedMetricEvent, err)
+			if r.metricsConsumer == nil {
+				r.failRequest(ctx, resp, http.StatusBadRequest, errUnsupportedMetricEvent, err)
+				return
+			}
+		} else if r.logsConsumer == nil {
+			r.failRequest(ctx, resp, http.StatusBadRequest, errUnsupportedLogEvent, err)
 			return
 		}
 
-		messagesReceived++
 		events = append(events, &msg)
 	}
+	if r.logsConsumer != nil {
+		r.consumeLogs(ctx, events, resp, req)
+	} else {
+		r.consumeMetrics(ctx, events, resp, req)
+	}
+}
 
+func (r *splunkReceiver) consumeMetrics(ctx context.Context, events []*splunk.Event, resp http.ResponseWriter, req *http.Request) {
+
+	md, _ := SplunkHecToMetricsData(r.logger, events)
+
+	decodeErr := r.metricsConsumer.ConsumeMetrics(ctx, md)
+	obsreport.EndMetricsReceiveOp(
+		ctx,
+		typeStr,
+		len(events),
+		len(events),
+		decodeErr)
+
+	if decodeErr != nil {
+		r.failRequest(ctx, resp, http.StatusInternalServerError, errNextConsumerRespBody, decodeErr)
+	} else {
+		resp.WriteHeader(http.StatusAccepted)
+		resp.Write(okRespBody)
+	}
+}
+
+func (r *splunkReceiver) consumeLogs(ctx context.Context, events []*splunk.Event, resp http.ResponseWriter, req *http.Request) {
 	logSlice, err := SplunkHecToLogData(r.logger, events)
 	if err != nil {
 		r.failRequest(ctx, resp, http.StatusBadRequest, errUnmarshalBodyRespBody, err)
@@ -228,24 +291,19 @@ func (r *splunkReceiver) handleReq(resp http.ResponseWriter, req *http.Request) 
 	for i := 0; i < logSlice.Len(); i++ {
 		rl := logSlice.At(i)
 		if r.config.AccessTokenPassthrough {
-			if accessToken := req.Header.Get(splunk.SplunkHECTokenHeader); accessToken != "" {
+			if accessToken := req.Header.Get(splunk.HECTokenHeader); accessToken != "" {
 				resource := rl.Resource()
 				if resource.IsNil() {
 					resource.InitEmpty()
 				}
-				resource.Attributes().InsertString(splunk.SplunkHecTokenLabel, accessToken)
+				resource.Attributes().InsertString(splunk.HecTokenLabel, accessToken)
 			}
 		}
 		ld.ResourceLogs().Append(rl)
 	}
 
-	decodeErr = r.logConsumer.ConsumeLogs(ctx, ld)
-	obsreport.EndMetricsReceiveOp(
-		ctx,
-		typeStr,
-		messagesReceived,
-		messagesReceived,
-		decodeErr)
+	decodeErr := r.logsConsumer.ConsumeLogs(ctx, ld)
+
 	if decodeErr != nil {
 		r.failRequest(ctx, resp, http.StatusInternalServerError, errNextConsumerRespBody, decodeErr)
 	} else {

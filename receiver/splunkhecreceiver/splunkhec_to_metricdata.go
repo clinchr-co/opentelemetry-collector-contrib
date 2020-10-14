@@ -31,80 +31,85 @@ import (
 // dropped time series.
 func SplunkHecToMetricsData(
 	logger *zap.Logger,
-	splunkHecDataPoints *splunk.Metric,
+	events []*splunk.Event,
 ) (pdata.Metrics, int) {
 
 	// TODO: not optimized at all, basically regenerating everything for each
 	// 	data point.
 	numDroppedTimeSeries := 0
 	md := pdata.NewMetrics()
-	resourceMetrics := pdata.NewResourceMetrics()
-	resourceMetrics.InitEmpty()
-	resourceMetrics.Resource().InitEmpty()
-	metrics := pdata.NewInstrumentationLibraryMetrics()
-	metrics.InitEmpty()
 
-	labelKeys, labelValues := buildLabelKeysAndValues(splunkHecDataPoints.Fields)
-	for i, k := range labelKeys {
-		resourceMetrics.Resource().Attributes().InsertString(k, labelValues[i])
-	}
+	for _, event := range events {
+		resourceMetrics := pdata.NewResourceMetrics()
+		resourceMetrics.InitEmpty()
+		metrics := pdata.NewInstrumentationLibraryMetrics()
+		metrics.InitEmpty()
 
-	values := splunkHecDataPoints.GetValues()
-	metricNames := make([]string, 0, len(values))
-	for k := range values {
-		metricNames = append(metricNames, k)
-	}
-	sort.Strings(metricNames)
+		labelKeys, labelValues := buildLabelKeysAndValues(event.Fields)
+		if len(labelKeys) > 0 {
+			resourceMetrics.Resource().InitEmpty()
+		}
+		for i, k := range labelKeys {
+			resourceMetrics.Resource().Attributes().InsertString(k, labelValues[i])
+		}
 
-	for _, metricName := range metricNames {
-		pointTimestamp := convertTimestamp(splunkHecDataPoints.Time)
-		metric := pdata.NewMetric()
-		metric.InitEmpty()
-		// TODO currently mapping all values to unspecified.
-		metric.SetDataType(pdata.MetricDataTypeNone)
-		metric.SetName(metricName)
+		values := event.GetMetricValues()
+		metricNames := make([]string, 0, len(values))
+		for k := range values {
+			metricNames = append(metricNames, k)
+		}
+		sort.Strings(metricNames)
 
-		metricValue := values[metricName]
-		if i, ok := metricValue.(int64); ok {
-			addIntGauge(pointTimestamp, i, metric)
-		} else if i, ok := metricValue.(*int64); ok {
-			addIntGauge(pointTimestamp, *i, metric)
-		} else if f, ok := metricValue.(float64); ok {
-			if f == float64(int64(f)) {
-				addIntGauge(pointTimestamp, int64(f), metric)
+		for _, metricName := range metricNames {
+			pointTimestamp := convertTimestamp(event.Time)
+			metric := pdata.NewMetric()
+			metric.InitEmpty()
+			// TODO currently mapping all values to unspecified.
+			metric.SetDataType(pdata.MetricDataTypeNone)
+			metric.SetName(metricName)
+
+			metricValue := values[metricName]
+			if i, ok := metricValue.(int64); ok {
+				addIntGauge(pointTimestamp, i, metric)
+			} else if i, ok := metricValue.(*int64); ok {
+				addIntGauge(pointTimestamp, *i, metric)
+			} else if f, ok := metricValue.(float64); ok {
+				if f == float64(int64(f)) {
+					addIntGauge(pointTimestamp, int64(f), metric)
+				} else {
+					addDoubleGauge(pointTimestamp, f, metric)
+				}
+			} else if f, ok := metricValue.(*float64); ok {
+				if *f == float64(int64(*f)) {
+					addIntGauge(pointTimestamp, int64(*f), metric)
+				} else {
+					addDoubleGauge(pointTimestamp, *f, metric)
+				}
+			} else if s, ok := metricValue.(*string); ok {
+				// best effort, cast to string and turn into a number
+				dbl, err := strconv.ParseFloat(*s, 64)
+				if err != nil {
+					numDroppedTimeSeries++
+					logger.Debug("Cannot convert metric",
+						zap.String("metric", metricName))
+				} else {
+					addDoubleGauge(pointTimestamp, dbl, metric)
+				}
 			} else {
-				addDoubleGauge(pointTimestamp, f, metric)
-			}
-		} else if f, ok := metricValue.(*float64); ok {
-			if *f == float64(int64(*f)) {
-				addIntGauge(pointTimestamp, int64(*f), metric)
-			} else {
-				addDoubleGauge(pointTimestamp, *f, metric)
-			}
-		} else if s, ok := metricValue.(*string); ok {
-			// best effort, cast to string and turn into a number
-			dbl, err := strconv.ParseFloat(*s, 64)
-			if err != nil {
+				// drop this point as we do not know how to extract a value from it
 				numDroppedTimeSeries++
 				logger.Debug("Cannot convert metric",
 					zap.String("metric", metricName))
-			} else {
-				addDoubleGauge(pointTimestamp, dbl, metric)
 			}
-		} else {
-			// drop this point as we do not know how to extract a value from it
-			numDroppedTimeSeries++
-			logger.Debug("Cannot convert metric",
-				zap.String("metric", metricName))
-		}
 
-		if metric.DataType() != pdata.MetricDataTypeNone {
-			metrics.Metrics().Append(metric)
+			if metric.DataType() != pdata.MetricDataTypeNone {
+				metrics.Metrics().Append(metric)
+			}
 		}
-	}
-	if metrics.Metrics().Len() > 0 {
-		resourceMetrics.InstrumentationLibraryMetrics().Append(metrics)
-		md.ResourceMetrics().Append(resourceMetrics)
+		if metrics.Metrics().Len() > 0 {
+			resourceMetrics.InstrumentationLibraryMetrics().Append(metrics)
+			md.ResourceMetrics().Append(resourceMetrics)
+		}
 	}
 
 	return md, numDroppedTimeSeries

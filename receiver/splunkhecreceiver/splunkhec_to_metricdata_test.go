@@ -32,8 +32,8 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 	sec := float64(msecInt64) / 1e3
 	nanos := int64(sec * 1e9)
 
-	buildDefaultSplunkDataPt := func() *splunk.Metric {
-		return &splunk.Metric{
+	buildDefaultSplunkDataPt := func() *splunk.Event {
+		return &splunk.Event{
 			Time:       sec,
 			Host:       "localhost",
 			Source:     "source",
@@ -51,18 +51,18 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 
 	tests := []struct {
 		name                  string
-		splunkDataPoints      *splunk.Metric
+		splunkDataPoint       *splunk.Event
 		wantMetricsData       pdata.Metrics
 		wantDroppedTimeseries int
 	}{
 		{
-			name:             "int_gauge",
-			splunkDataPoints: buildDefaultSplunkDataPt(),
-			wantMetricsData:  buildDefaultMetricsData(nanos),
+			name:            "int_gauge",
+			splunkDataPoint: buildDefaultSplunkDataPt(),
+			wantMetricsData: buildDefaultMetricsData(nanos),
 		},
 		{
 			name: "multiple",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["metric_name:yetanother"] = int64Ptr(14)
 				pt.Fields["metric_name:yetanotherandanother"] = int64Ptr(15)
@@ -100,7 +100,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "double_gauge",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["metric_name:single"] = float64Ptr(13.13)
 				return pt
@@ -124,7 +124,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "int_counter_pointer",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				return pt
 			}(),
@@ -132,7 +132,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "int_counter",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["metric_name:single"] = int64(13)
 				return pt
@@ -141,7 +141,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "double_counter",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["metric_name:single"] = float64Ptr(13.13)
 				return pt
@@ -166,7 +166,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 
 		{
 			name: "double_counter_as_int",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["metric_name:single"] = float64Ptr(13)
 				return pt
@@ -190,7 +190,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "double_counter_as_string",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["metric_name:single"] = strPtr("13.13")
 				return pt
@@ -214,7 +214,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "zero_timestamp",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Time = 0
 				return pt
@@ -225,7 +225,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "empty_dimension_value",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["k0"] = ""
 				return pt
@@ -239,7 +239,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "invalid_point",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["metric_name:single"] = "foo"
 				return pt
@@ -251,7 +251,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "cannot_convert_string",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				value := "foo"
 				pt.Fields["metric_name:single"] = &value
@@ -264,7 +264,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 		},
 		{
 			name: "nil_dimension_ignored",
-			splunkDataPoints: func() *splunk.Metric {
+			splunkDataPoint: func() *splunk.Event {
 				pt := buildDefaultSplunkDataPt()
 				pt.Fields["k4"] = nil
 				pt.Fields["k5"] = nil
@@ -277,7 +277,7 @@ func Test_splunkV2ToMetricsData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			md, numDroppedTimeseries := SplunkHecToMetricsData(zap.NewNop(), tt.splunkDataPoints)
+			md, numDroppedTimeseries := SplunkHecToMetricsData(zap.NewNop(), []*splunk.Event{tt.splunkDataPoint})
 			assert.Equal(t, tt.wantDroppedTimeseries, numDroppedTimeseries)
 			assert.Equal(t, tt.wantMetricsData, md)
 		})

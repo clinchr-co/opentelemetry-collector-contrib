@@ -106,7 +106,14 @@ func createMetricsReceiver(
 	consumer consumer.MetricsConsumer,
 ) (component.MetricsReceiver, error) {
 
-	return nil, configerror.ErrDataTypeIsNotSupported
+	rCfg := cfg.(*Config)
+
+	err := rCfg.validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return New(params.Logger, *rCfg, consumer)
 }
 
 // createLogsReceiver creates a logs receiver based on provided config.

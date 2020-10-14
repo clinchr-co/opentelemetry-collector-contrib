@@ -240,7 +240,6 @@ func (r *splunkReceiver) handleReq(resp http.ResponseWriter, req *http.Request) 
 	}
 
 	decodeErr = r.logConsumer.ConsumeLogs(ctx, ld)
-
 	obsreport.EndMetricsReceiveOp(
 		ctx,
 		typeStr,

@@ -109,7 +109,7 @@ func Test_splunkhecreceiver_NewMetricsReceiver(t *testing.T) {
 	emptyEndpointConfig := createDefaultConfig().(*Config)
 	emptyEndpointConfig.Endpoint = ""
 	type args struct {
-		config       Config
+		config          Config
 		metricsConsumer consumer.MetricsConsumer
 	}
 	tests := []struct {
@@ -127,7 +127,7 @@ func Test_splunkhecreceiver_NewMetricsReceiver(t *testing.T) {
 		{
 			name: "empty_endpoint",
 			args: args{
-				config:       *emptyEndpointConfig,
+				config:          *emptyEndpointConfig,
 				metricsConsumer: new(exportertest.SinkMetricsExporter),
 			},
 			wantErr: errEmptyEndpoint,
@@ -135,7 +135,7 @@ func Test_splunkhecreceiver_NewMetricsReceiver(t *testing.T) {
 		{
 			name: "default_endpoint",
 			args: args{
-				config:       *defaultConfig,
+				config:          *defaultConfig,
 				metricsConsumer: exportertest.NewNopMetricsExporter(),
 			},
 		},
@@ -550,8 +550,8 @@ func Test_splunkhecReceiver_AccessTokenPassthrough(t *testing.T) {
 
 func buildSplunkHecMetricsMsg(time float64, value int64, dimensions uint) *splunk.Event {
 	ev := &splunk.Event{
-		Time:   time,
-		Event:  "metric",
+		Time:  time,
+		Event: "metric",
 		Fields: map[string]interface{}{
 			"metric_name:foo": value,
 		},

@@ -30,51 +30,38 @@ const (
 )
 
 // SplunkHecToLogData transforms splunk events into logs
-func SplunkHecToLogData(logger *zap.Logger, events []*splunk.Event) (pdata.ResourceLogsSlice, error) {
-	lrs := pdata.NewResourceLogsSlice()
-	lrs.Resize(len(events))
+func SplunkHecToLogData(logger *zap.Logger, events []*splunk.Event, resourceCustomizer func(pdata.Resource)) (pdata.Logs, error) {
+	ld := pdata.NewLogs()
+	rls := ld.ResourceLogs()
+	rls.Resize(len(events))
 
 	for i, event := range events {
-		lr := lrs.At(i)
-		lr.InitEmpty()
+		rl := rls.At(i)
+		rl.InitEmpty()
 		logRecord := pdata.NewLogRecord()
 		logRecord.InitEmpty()
 
 		// The SourceType field is the most logical "name" of the event.
 		logRecord.SetName(event.SourceType)
 		logRecord.Body().InitEmpty()
-		if value, ok := event.Event.(string); ok {
-			logRecord.Body().SetStringVal(value)
-		} else if value, ok := event.Event.(int64); ok {
-			logRecord.Body().SetIntVal(value)
-		} else if value, ok := event.Event.(float64); ok {
-			logRecord.Body().SetDoubleVal(value)
-		} else if value, ok := event.Event.(bool); ok {
-			logRecord.Body().SetBoolVal(value)
-		} else if value, ok := event.Event.(map[string]interface{}); ok {
-			mapValue, err := convertToAttributeMap(logger, value)
-			if err != nil {
-				return lrs, err
-			}
-			logRecord.Body().SetMapVal(mapValue)
-		} else if value, ok := event.Event.([]interface{}); ok {
-			arrValue, err := convertToArrayVal(logger, value)
-			if err != nil {
-				return lrs, err
-			}
-			logRecord.Body().SetArrayVal(arrValue)
+		attrValue, err := convertInterfaceToAttributeValue(logger, event.Event)
+		if err != nil {
+			logger.Debug("Unsupported value conversion", zap.Any("value", event.Event))
+			return ld, errors.New(cannotConvertValue)
 		}
+		attrValue.CopyTo(logRecord.Body())
 
 		// Splunk timestamps are in seconds so convert to nanos by multiplying
 		// by 1 billion.
 		logRecord.SetTimestamp(pdata.TimestampUnixNano(event.Time * 1e9))
 
-		lr.Resource().InitEmpty()
-		attrs := lr.Resource().Attributes()
+		rl.Resource().InitEmpty()
+		attrs := rl.Resource().Attributes()
 		attrs.InitEmptyWithCapacity(3)
 		attrs.InsertString(conventions.AttributeHostHostname, event.Host)
 		attrs.InsertString(conventions.AttributeServiceName, event.Source)
 		attrs.InsertString(splunk.SourcetypeLabel, event.SourceType)
+		resourceCustomizer(rl.Resource())
 		//TODO consider setting the index field as well for pass through scenarios.
 		keys := make([]string, 0, len(event.Fields))
 		for k := range event.Fields {
@@ -85,17 +72,17 @@ func SplunkHecToLogData(logger *zap.Logger, events []*splunk.Event) (pdata.Resou
 			val := event.Fields[key]
 			attrValue, err := convertInterfaceToAttributeValue(logger, val)
 			if err != nil {
-				return lrs, err
+				return ld, err
 			}
 			logRecord.Attributes().Insert(key, attrValue)
 		}
 		ill := pdata.NewInstrumentationLibraryLogs()
 		ill.InitEmpty()
 		ill.Logs().Append(logRecord)
-		lr.InstrumentationLibraryLogs().Append(ill)
+		rl.InstrumentationLibraryLogs().Append(ill)
 	}
 
-	return lrs, nil
+	return ld, nil
 }
 
 func convertInterfaceToAttributeValue(logger *zap.Logger, originalValue interface{}) (pdata.AttributeValue, error) {

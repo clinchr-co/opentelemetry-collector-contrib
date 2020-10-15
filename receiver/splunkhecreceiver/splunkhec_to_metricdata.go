@@ -29,10 +29,7 @@ import (
 // SplunkHecToMetricsData converts Splunk HEC metric points to
 // consumerdata.MetricsData. Returning the converted data and the number of
 // dropped time series.
-func SplunkHecToMetricsData(
-	logger *zap.Logger,
-	events []*splunk.Event,
-) (pdata.Metrics, int) {
+func SplunkHecToMetricsData(logger *zap.Logger, events []*splunk.Event, resourceCustomizer func(pdata.Resource)) (pdata.Metrics, int) {
 
 	// TODO: not optimized at all, basically regenerating everything for each
 	// 	data point.
@@ -42,6 +39,7 @@ func SplunkHecToMetricsData(
 	for _, event := range events {
 		resourceMetrics := pdata.NewResourceMetrics()
 		resourceMetrics.InitEmpty()
+
 		metrics := pdata.NewInstrumentationLibraryMetrics()
 		metrics.InitEmpty()
 
@@ -52,6 +50,7 @@ func SplunkHecToMetricsData(
 		for i, k := range labelKeys {
 			resourceMetrics.Resource().Attributes().InsertString(k, labelValues[i])
 		}
+		resourceCustomizer(resourceMetrics.Resource())
 
 		values := event.GetMetricValues()
 		metricNames := make([]string, 0, len(values))

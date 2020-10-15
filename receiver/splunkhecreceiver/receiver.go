@@ -42,11 +42,11 @@ const (
 
 	responseOK                        = "OK"
 	responseInvalidMethod             = `Only "POST" method is supported`
-	responseInvalidContentType        = "\"Content-Type\" must be \"application/json\""
-	responseInvalidEncoding           = "\"Content-Encoding\" must be \"gzip\" or empty"
+	responseInvalidContentType        = `"Content-Type" must be "application/json"`
+	responseInvalidEncoding           = `"Content-Encoding" must be "gzip" or empty`
 	responseErrGzipReader             = "Error on gzip body"
 	responseErrUnmarshalBody          = "Failed to unmarshal message body"
-	responseErrNextConsumer           = "Internal Server Error"
+	responseErrInternalServerError    = "Internal Server Error"
 	responseErrUnsupportedMetricEvent = "Unsupported metric event"
 	responseErrUnsupportedLogEvent    = "Unsupported log event"
 
@@ -67,7 +67,7 @@ var (
 	invalidEncodingRespBody   = initJSONResponse(responseInvalidEncoding)
 	errGzipReaderRespBody     = initJSONResponse(responseErrGzipReader)
 	errUnmarshalBodyRespBody  = initJSONResponse(responseErrUnmarshalBody)
-	errNextConsumerRespBody   = initJSONResponse(responseErrNextConsumer)
+	errInternalServerError    = initJSONResponse(responseErrInternalServerError)
 	errUnsupportedMetricEvent = initJSONResponse(responseErrUnsupportedMetricEvent)
 	errUnsupportedLogEvent    = initJSONResponse(responseErrUnsupportedLogEvent)
 )
@@ -259,9 +259,23 @@ func (r *splunkReceiver) handleReq(resp http.ResponseWriter, req *http.Request) 
 	}
 }
 
-func (r *splunkReceiver) consumeMetrics(ctx context.Context, events []*splunk.Event, resp http.ResponseWriter, req *http.Request) {
+func (r *splunkReceiver) createResourceCustomizer(req *http.Request) func(pdata.Resource) {
+	customizer := func(resource pdata.Resource) {}
+	if r.config.AccessTokenPassthrough {
+		if accessToken := req.Header.Get(splunk.HECTokenHeader); accessToken != "" {
+			customizer = func(resource pdata.Resource) {
+				if resource.IsNil() {
+					resource.InitEmpty()
+				}
+				resource.Attributes().InsertString(splunk.HecTokenLabel, accessToken)
+			}
+		}
+	}
+	return customizer
+}
 
-	md, _ := SplunkHecToMetricsData(r.logger, events)
+func (r *splunkReceiver) consumeMetrics(ctx context.Context, events []*splunk.Event, resp http.ResponseWriter, req *http.Request) {
+	md, _ := SplunkHecToMetricsData(r.logger, events, r.createResourceCustomizer(req))
 
 	decodeErr := r.metricsConsumer.ConsumeMetrics(ctx, md)
 	obsreport.EndMetricsReceiveOp(
@@ -272,7 +286,7 @@ func (r *splunkReceiver) consumeMetrics(ctx context.Context, events []*splunk.Ev
 		decodeErr)
 
 	if decodeErr != nil {
-		r.failRequest(ctx, resp, http.StatusInternalServerError, errNextConsumerRespBody, decodeErr)
+		r.failRequest(ctx, resp, http.StatusInternalServerError, errInternalServerError, decodeErr)
 	} else {
 		resp.WriteHeader(http.StatusAccepted)
 		resp.Write(okRespBody)
@@ -280,32 +294,16 @@ func (r *splunkReceiver) consumeMetrics(ctx context.Context, events []*splunk.Ev
 }
 
 func (r *splunkReceiver) consumeLogs(ctx context.Context, events []*splunk.Event, resp http.ResponseWriter, req *http.Request) {
-	logSlice, err := SplunkHecToLogData(r.logger, events)
+	ld, err := SplunkHecToLogData(r.logger, events, r.createResourceCustomizer(req))
 	if err != nil {
 		r.failRequest(ctx, resp, http.StatusBadRequest, errUnmarshalBodyRespBody, err)
 		return
 	}
 
-	ld := pdata.NewLogs()
-
-	for i := 0; i < logSlice.Len(); i++ {
-		rl := logSlice.At(i)
-		if r.config.AccessTokenPassthrough {
-			if accessToken := req.Header.Get(splunk.HECTokenHeader); accessToken != "" {
-				resource := rl.Resource()
-				if resource.IsNil() {
-					resource.InitEmpty()
-				}
-				resource.Attributes().InsertString(splunk.HecTokenLabel, accessToken)
-			}
-		}
-		ld.ResourceLogs().Append(rl)
-	}
-
 	decodeErr := r.logsConsumer.ConsumeLogs(ctx, ld)
 
 	if decodeErr != nil {
-		r.failRequest(ctx, resp, http.StatusInternalServerError, errNextConsumerRespBody, decodeErr)
+		r.failRequest(ctx, resp, http.StatusInternalServerError, errInternalServerError, decodeErr)
 	} else {
 		resp.WriteHeader(http.StatusAccepted)
 		resp.Write(okRespBody)

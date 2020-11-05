@@ -15,8 +15,8 @@
 package splunkhecexporter
 
 import (
-	"fmt"
 	"math"
+	"strconv"
 
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.opentelemetry.io/collector/translator/conventions"
@@ -32,7 +32,11 @@ const (
 	// splunkMetricValue is the splunk metric value prefix.
 	splunkMetricValue = "metric_name"
 	// countSuffix is the count metric value suffix.
-	countSuffix = "count"
+	countSuffix = "_count"
+	// sumSuffix is the sum metric value suffix.
+	sumSuffix = "_sum"
+	// bucketSuffix is the bucket metric value suffix.
+	bucketSuffix = "_bucket"
 )
 
 func metricDataToSplunk(logger *zap.Logger, data pdata.Metrics, config *Config) ([]*splunk.Event, int, error) {
@@ -125,17 +129,48 @@ func metricDataToSplunk(logger *zap.Logger, data pdata.Metrics, config *Config) 
 						if dataPt.IsNil() {
 							continue
 						}
-						fields := cloneMap(commonFields)
-						populateLabels(fields, dataPt.LabelsMap())
-						fields[fmt.Sprintf("%s:%s_%s", splunkMetricValue, tm.Name(), countSuffix)] = dataPt.Count()
-						fields[metricFieldName] = dataPt.Sum()
-						for bi := 0; bi < len(dataPt.ExplicitBounds()); bi++ {
-							bound := dataPt.ExplicitBounds()[bi]
-							fields[fmt.Sprintf("%s:%s_%f", splunkMetricValue, tm.Name(), bound)] = dataPt.BucketCounts()[bi]
+						bounds := dataPt.ExplicitBounds()
+						counts := dataPt.BucketCounts()
+						// Spec says counts is optional but if present it must have one more
+						// element than the bounds array.
+						if len(counts) > 0 && len(counts) != len(bounds)+1 {
+							continue
 						}
-
-						sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
-						splunkMetrics = append(splunkMetrics, sm)
+						// first, add one event for sum, and one for count
+						{
+							fields := cloneMap(commonFields)
+							populateLabels(fields, dataPt.LabelsMap())
+							fields[metricFieldName+sumSuffix] = dataPt.Sum()
+							sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
+							splunkMetrics = append(splunkMetrics, sm)
+						}
+						{
+							fields := cloneMap(commonFields)
+							populateLabels(fields, dataPt.LabelsMap())
+							fields[metricFieldName+countSuffix] = dataPt.Count()
+							sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
+							splunkMetrics = append(splunkMetrics, sm)
+						}
+						value := uint64(0)
+						// now create buckets for each bound.
+						for bi := 0; bi < len(bounds); bi++ {
+							fields := cloneMap(commonFields)
+							populateLabels(fields, dataPt.LabelsMap())
+							fields["le"] = float64ToDimValue(bounds[bi])
+							value += counts[bi]
+							fields[metricFieldName+bucketSuffix] = value
+							sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
+							splunkMetrics = append(splunkMetrics, sm)
+						}
+						// add an upper bound for +Inf
+						{
+							fields := cloneMap(commonFields)
+							populateLabels(fields, dataPt.LabelsMap())
+							fields["le"] = float64ToDimValue(math.Inf(1))
+							fields[metricFieldName+bucketSuffix] = value + counts[len(counts)-1]
+							sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
+							splunkMetrics = append(splunkMetrics, sm)
+						}
 					}
 				case pdata.MetricDataTypeIntHistogram:
 					// TODO uncomment after https://github.com/open-telemetry/opentelemetry-collector/pull/2055 is merged.
@@ -148,17 +183,48 @@ func metricDataToSplunk(logger *zap.Logger, data pdata.Metrics, config *Config) 
 						if dataPt.IsNil() {
 							continue
 						}
-						fields := cloneMap(commonFields)
-						populateLabels(fields, dataPt.LabelsMap())
-						fields[fmt.Sprintf("%s:%s_%s", splunkMetricValue, tm.Name(), countSuffix)] = dataPt.Count()
-						fields[metricFieldName] = dataPt.Sum()
-						for bi := 0; bi < len(dataPt.ExplicitBounds()); bi++ {
-							bound := dataPt.ExplicitBounds()[bi]
-							fields[fmt.Sprintf("%s:%s_%f", splunkMetricValue, tm.Name(), bound)] = dataPt.BucketCounts()[bi]
+						bounds := dataPt.ExplicitBounds()
+						counts := dataPt.BucketCounts()
+						// Spec says counts is optional but if present it must have one more
+						// element than the bounds array.
+						if len(counts) > 0 && len(counts) != len(bounds)+1 {
+							continue
 						}
-
-						sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
-						splunkMetrics = append(splunkMetrics, sm)
+						// first, add one event for sum, and one for count
+						{
+							fields := cloneMap(commonFields)
+							populateLabels(fields, dataPt.LabelsMap())
+							fields[metricFieldName+sumSuffix] = dataPt.Sum()
+							sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
+							splunkMetrics = append(splunkMetrics, sm)
+						}
+						{
+							fields := cloneMap(commonFields)
+							populateLabels(fields, dataPt.LabelsMap())
+							fields[metricFieldName+countSuffix] = dataPt.Count()
+							sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
+							splunkMetrics = append(splunkMetrics, sm)
+						}
+						value := uint64(0)
+						// now create buckets for each bound.
+						for bi := 0; bi < len(bounds); bi++ {
+							fields := cloneMap(commonFields)
+							populateLabels(fields, dataPt.LabelsMap())
+							fields["le"] = float64ToDimValue(bounds[bi])
+							value += counts[bi]
+							fields[metricFieldName+bucketSuffix] = value
+							sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
+							splunkMetrics = append(splunkMetrics, sm)
+						}
+						// add an upper bound for +Inf
+						{
+							fields := cloneMap(commonFields)
+							populateLabels(fields, dataPt.LabelsMap())
+							fields["le"] = float64ToDimValue(math.Inf(1))
+							fields[metricFieldName+bucketSuffix] = value + counts[len(counts)-1]
+							sm := createEvent(dataPt.Timestamp(), host, source, sourceType, index, fields)
+							splunkMetrics = append(splunkMetrics, sm)
+						}
 					}
 				case pdata.MetricDataTypeDoubleSum:
 					// TODO uncomment after https://github.com/open-telemetry/opentelemetry-collector/pull/2055 is merged.
@@ -189,6 +255,7 @@ func metricDataToSplunk(logger *zap.Logger, data pdata.Metrics, config *Config) 
 						if dataPt.IsNil() {
 							continue
 						}
+						dataPt.Exemplars()
 						fields := cloneMap(commonFields)
 						populateLabels(fields, dataPt.LabelsMap())
 						fields[metricFieldName] = dataPt.Value()
@@ -250,4 +317,14 @@ func timestampToSecondsWithMillisecondPrecision(ts pdata.TimestampUnixNano) *flo
 	val := math.Round(float64(ts)/1e6) / 1e3
 
 	return &val
+}
+
+func float64ToDimValue(f float64) string {
+	// Parameters below are the same used by Prometheus
+	// see https://github.com/prometheus/common/blob/b5fe7d854c42dc7842e48d1ca58f60feae09d77b/expfmt/text_create.go#L450
+	// SignalFx agent uses a different pattern
+	// https://github.com/signalfx/signalfx-agent/blob/5779a3de0c9861fa07316fd11b3c4ff38c0d78f0/internal/monitors/prometheusexporter/conversion.go#L77
+	// The important issue here is consistency with the exporter, opting for the
+	// more common one used by Prometheus.
+	return strconv.FormatFloat(f, 'g', -1, 64)
 }

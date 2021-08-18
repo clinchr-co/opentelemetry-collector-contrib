@@ -19,7 +19,6 @@ import (
 	"strconv"
 
 	"go.opentelemetry.io/collector/model/pdata"
-	conventions "go.opentelemetry.io/collector/translator/conventions/v1.5.0"
 	tracetranslator "go.opentelemetry.io/collector/translator/trace"
 	"go.uber.org/zap"
 
@@ -45,6 +44,10 @@ func metricDataToSplunk(logger *zap.Logger, data pdata.Metrics, config *Config) 
 	numDroppedTimeSeries := 0
 	splunkMetrics := make([]*splunk.Event, 0, data.DataPointCount())
 	rms := data.ResourceMetrics()
+	sourceKey := config.GetSourceKey()
+	sourceTypeKey := config.GetSourceTypeKey()
+	indexKey := config.GetIndexKey()
+	hostKey := config.GetHostKey()
 	for i := 0; i < rms.Len(); i++ {
 		rm := rms.At(i)
 		host := unknownHostName
@@ -54,16 +57,16 @@ func metricDataToSplunk(logger *zap.Logger, data pdata.Metrics, config *Config) 
 		commonFields := map[string]interface{}{}
 		resource := rm.Resource()
 		attributes := resource.Attributes()
-		if conventionHost, isSet := attributes.Get(conventions.AttributeHostName); isSet {
+		if conventionHost, isSet := attributes.Get(hostKey); isSet {
 			host = conventionHost.StringVal()
 		}
-		if sourceSet, isSet := attributes.Get(splunk.DefaultSourceLabel); isSet {
+		if sourceSet, isSet := attributes.Get(sourceKey); isSet {
 			source = sourceSet.StringVal()
 		}
-		if sourcetypeSet, isSet := attributes.Get(splunk.DefaultSourceTypeLabel); isSet {
+		if sourcetypeSet, isSet := attributes.Get(sourceTypeKey); isSet {
 			sourceType = sourcetypeSet.StringVal()
 		}
-		if indexSet, isSet := attributes.Get(splunk.DefaultIndexLabel); isSet {
+		if indexSet, isSet := attributes.Get(indexKey); isSet {
 			index = indexSet.StringVal()
 		}
 		attributes.Range(func(k string, v pdata.AttributeValue) bool {

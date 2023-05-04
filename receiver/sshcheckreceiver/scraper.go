@@ -135,7 +135,7 @@ func (s *sshcheckScraper) scrape(ctx context.Context) (_ pmetric.Metrics, err er
 		}
 	}
 
-	return s.mb.Emit(), nil
+	return s.mb.Emit(metadata.WithSSHEndpoint(s.Config.Endpoint)), nil
 }
 
 func newScraper(conf *Config, settings receiver.CreateSettings) *sshcheckScraper {
